@@ -1,0 +1,81 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.fft import fft, ifft
+from ta.trend import ADX
+
+import pandas as pd
+import pandas_datareader as pdr
+
+# Specify the start and end dates
+start_date = '2018-01-01'
+end_date = '2018-12-31'
+
+# Define the ticker symbol for the S&P 500 index
+ticker_symbol = '^GSPC'
+
+# Retrieve the stock data from Yahoo Finance
+data = pdr.get_data_yahoo(ticker_symbol, start=start_date, end=end_date)
+
+# Save the data to a CSV file
+data.to_csv('sp500_2018.csv')
+
+# Step 1: Filter stocks based on volume criteria
+def volume_filter(data, threshold=0.03):
+    total_volume = data['Volume'].sum()
+    filtered_stocks = data[data['Volume'] >= total_volume * threshold]
+    return filtered_stocks
+
+# Step 2: Filter stocks based on ADX criteria
+def adx_filter(data, threshold=25):
+    adx = ADX(data['High'], data['Low'], data['Close'])
+    filtered_stocks = data[adx.adx >= threshold]
+    return filtered_stocks
+
+# Step 3: Calculate MACD with restrictions and filter based on conditions, including projection
+def calculate_macd(data, short_period=12, long_period=26, signal_period=9):
+    closing_prices = data['Close'].values
+
+    # Perform Fourier transform on closing prices
+    fft_prices = fft(closing_prices)
+
+    # Calculate frequencies for the Fourier components
+    freqs = np.fft.fftfreq(len(closing_prices))
+
+    # Find the index corresponding to the short, long, and signal periods
+    short_idx = np.where((np.abs(freqs) == 1 / short_period) & (short_period != 1))[0][0]
+    long_idx = np.where((np.abs(freqs) == 1 / long_period) & (long_period != 1))[0][0]
+    signal_idx = np.where((np.abs(freqs) == 1 / signal_period) & (signal_period != 1))[0][0]
+
+    # Calculate the MACD line using the Fourier components
+    macd_line = ifft(fft_prices[short_idx] - fft_prices[long_idx]).real
+
+    # Calculate the signal line using the Fourier components
+    signal_line = ifft(fft_prices[signal_idx]).real
+
+    # Calculate the MACD histogram
+    macd_histogram = macd_line - signal_line
+
+    # Project MACD and signal values one day into the future
+    projected_macd = np.append(macd_line[1:], macd_line[-1])
+    projected_signal = np.append(signal_line[1:], signal_line[-1])
+
+    # Filter stocks based on MACD conditions, including projection
+    filtered_stocks = data[(macd_line > signal_line) & (macd_line > 0) & (signal_line > 0) & (projected_macd > projected_signal)]
+
+    return filtered_stocks
+
+# Example usage
+data = load_data('stock_data.csv')
+
+# Step 1: Volume filter
+filtered_data = volume_filter(data, threshold=0.03)
+
+# Step 2: ADX filter
+filtered_data = adx_filter(filtered_data, threshold=25)
+
+# Step 3: Calculate MACD with restrictions and filter based on conditions
+filtered_stocks = calculate_macd(filtered_data)
+
+# Output the list of filtered stocks
+print(filtered_stocks['StockSymbol'])
