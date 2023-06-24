@@ -1,35 +1,36 @@
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+import pandas_ta as ta
 from scipy.fft import fft, ifft
-from ta.trend import ADX
+import numpy as np
+import yfinance as yf
 
-import pandas as pd
-import pandas_datareader as pdr
+# Define the stock symbols and date range
+stock_symbols = ['AAPL', 'MSFT']  # Replace with your desired stock symbols
+start_date = '2022-01-01'  # Replace with your desired start date
+end_date = '2022-12-31'  # Replace with your desired end date
 
-# Specify the start and end dates
-start_date = '2018-01-01'
-end_date = '2018-12-31'
+# Step 0: Retrieve stock data from Yahoo Finance
+def get_stock_data(symbols, start, end):
+    data = yf.download(symbols, start=start, end=end)
+    data = data.reset_index()
+    return data
 
-# Define the ticker symbol for the S&P 500 index
-ticker_symbol = '^GSPC'
-
-# Retrieve the stock data from Yahoo Finance
-data = pdr.get_data_yahoo(ticker_symbol, start=start_date, end=end_date)
-
-# Save the data to a CSV file
-data.to_csv('sp500_2018.csv')
+# Load stock data from Yahoo Finance
+data = get_stock_data(stock_symbols, start_date, end_date)
 
 # Step 1: Filter stocks based on volume criteria
 def volume_filter(data, threshold=0.03):
+    if 'Volume' not in data.columns:
+        raise ValueError("Volume column not found in data.")
+    data = data.dropna(subset=['Volume'])  # Drop rows with missing volume data
     total_volume = data['Volume'].sum()
-    filtered_stocks = data[data['Volume'] >= total_volume * threshold]
+    filtered_stocks = data[data['Volume'] >= total_volume * threshold].set_index('Date')
     return filtered_stocks
 
-# Step 2: Filter stocks based on ADX criteria
-def adx_filter(data, threshold=25):
-    adx = ADX(data['High'], data['Low'], data['Close'])
-    filtered_stocks = data[adx.adx >= threshold]
+# Step 2: Calculate ADX using panda_ta library
+def calculate_adx(data, threshold=25):
+    data_with_adx = data.ta.adx(append=True)
+    filtered_stocks = data_with_adx[data_with_adx['ADX'] >= threshold].set_index('Date')
     return filtered_stocks
 
 # Step 3: Calculate MACD with restrictions and filter based on conditions, including projection
@@ -57,25 +58,21 @@ def calculate_macd(data, short_period=12, long_period=26, signal_period=9):
     macd_histogram = macd_line - signal_line
 
     # Project MACD and signal values one day into the future
-    projected_macd = np.append(macd_line[1:], macd_line[-1])
-    projected_signal = np.append(signal_line[1:], signal_line[-1])
+    projected_macd = np.roll(macd_line, -1)
+    projected_signal = np.roll(signal_line, -1)
 
-    # Filter stocks based on MACD conditions, including projection
-    filtered_stocks = data[(macd_line > signal_line) & (macd_line > 0) & (signal_line > 0) & (projected_macd > projected_signal)]
+    # Filter stocks based on MACD conditions
+    filtered_stocks = data[(macd_histogram > 0) & (macd_line > projected_macd) & (signal_line > projected_signal)].set_index('Date')
 
     return filtered_stocks
 
-# Example usage
-data = load_data('stock_data.csv')
-
-# Step 1: Volume filter
+# Step 1: Filter stocks based on volume criteria
 filtered_data = volume_filter(data, threshold=0.03)
 
-# Step 2: ADX filter
-filtered_data = adx_filter(filtered_data, threshold=25)
+# Step 2: Calculate ADX
+filtered_data = calculate_adx(filtered_data, threshold=25)
 
-# Step 3: Calculate MACD with restrictions and filter based on conditions
-filtered_stocks = calculate_macd(filtered_data)
+# Step 3: Calculate MACD
+macd_filtered_data = calculate_macd(filtered_data)
 
-# Output the list of filtered stocks
-print(filtered_stocks['StockSymbol'])
+print(macd_filtered_data)
