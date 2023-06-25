@@ -1,78 +1,96 @@
 import pandas as pd
-import pandas_ta as ta
-from scipy.fft import fft, ifft
-import numpy as np
 import yfinance as yf
+import talib
+import numpy as np
 
-# Define the stock symbols and date range
-stock_symbols = ['AAPL', 'MSFT']  # Replace with your desired stock symbols
-start_date = '2022-01-01'  # Replace with your desired start date
-end_date = '2022-12-31'  # Replace with your desired end date
+def calculate_adx(group, periods):
+    high = np.array(group['High']).reshape(-1)
+    low = np.array(group['Low']).reshape(-1)
+    close = np.array(group['Close']).reshape(-1)
 
-# Step 0: Retrieve stock data from Yahoo Finance
-def get_stock_data(symbols, start, end):
-    data = yf.download(symbols, start=start, end=end)
-    data = data.reset_index()
-    return data
+    adx = talib.ADX(high, low, close, timeperiod=periods)
+    group['ADX'] = adx
+    return group
 
-# Load stock data from Yahoo Finance
-data = get_stock_data(stock_symbols, start_date, end_date)
+def calculate_macd(group, periods):
+    close_price = np.array(group['Close']).reshape(-1)
+    macd, signal, _ = talib.MACD(close_price, fastperiod=periods[0], slowperiod=periods[1], signalperiod=periods[2])
+    group['MACD'] = macd
+    group['Signal'] = signal
+    return group
 
-# Step 1: Filter stocks based on volume criteria
-def volume_filter(data, threshold=0.03):
-    if 'Volume' not in data.columns:
-        raise ValueError("Volume column not found in data.")
-    data = data.dropna(subset=['Volume'])  # Drop rows with missing volume data
-    total_volume = data['Volume'].sum()
-    filtered_stocks = data[data['Volume'] >= total_volume * threshold].set_index('Date')
-    return filtered_stocks
+def filter_stocks(stock_data):
+    filtered_stocks = stock_data[
+        (stock_data['ADX'] > 25) &
+        (stock_data['MACD'] > 0) &
+        (stock_data['MACD'] > stock_data['Signal'])
+    ]
+    return filtered_stocks['Symbol'].tolist()
 
-# Step 2: Calculate ADX using panda_ta library
-def calculate_adx(data, threshold=25):
-    data_with_adx = data.ta.adx(append=True)
-    filtered_stocks = data_with_adx[data_with_adx['ADX'] >= threshold].set_index('Date')
-    return filtered_stocks
+def calculate_macd_periods(stock_data):
+    # Calculate Fourier transformation
+    close_price = np.array(stock_data['Close']).reshape(-1)
+    fourier = np.fft.fft(close_price)
+    frequencies = np.fft.fftfreq(len(close_price))
 
-# Step 3: Calculate MACD with restrictions and filter based on conditions, including projection
-def calculate_macd(data, short_period=12, long_period=26, signal_period=9):
-    closing_prices = data['Close'].values
+    # Find dominant frequencies
+    dominant_frequencies = frequencies[np.argsort(np.abs(fourier))[-3:]]
+    dominant_periods = np.round(1 / dominant_frequencies).astype(int)
 
-    # Perform Fourier transform on closing prices
-    fft_prices = fft(closing_prices)
+    # Filter periods to have a difference of at least 3 and not equal to 1
+    filtered_periods = []
+    for period in dominant_periods:
+        if period != 1 and not any(abs(period - p) < 3 for p in filtered_periods):
+            filtered_periods.append(period)
 
-    # Calculate frequencies for the Fourier components
-    freqs = np.fft.fftfreq(len(closing_prices))
+    return filtered_periods
 
-    # Find the index corresponding to the short, long, and signal periods
-    short_idx = np.where((np.abs(freqs) == 1 / short_period) & (short_period != 1))[0][0]
-    long_idx = np.where((np.abs(freqs) == 1 / long_period) & (long_period != 1))[0][0]
-    signal_idx = np.where((np.abs(freqs) == 1 / signal_period) & (signal_period != 1))[0][0]
+def main():
+    # Define the stocks of interest
+    stocks = ['AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'TSLA', 'GOOG', 'META', 'BRK.B', 'UNH', 'JNJ', 'XOM', 'JPM', 'V', 'LLY', 'PG', 'AVGO', 'MA', 'HD', 'MRK', 'CVX', 'PEP', 'ABBV', 'KO', 'COST', 'ADBE', 'PFE', 'WMT', 'MCD', 'CSCO', 'CRM', 'TMO', 'ACN', 'BAC', 'ABT']
 
-    # Calculate the MACD line using the Fourier components
-    macd_line = ifft(fft_prices[short_idx] - fft_prices[long_idx]).real
+    # Prompt the user to enter the start and end dates
+    start_date = input("Enter the start date (YYYY-MM-DD): ")
+    end_date = input("Enter the end date (YYYY-MM-DD): ")
 
-    # Calculate the signal line using the Fourier components
-    signal_line = ifft(fft_prices[signal_idx]).real
+    # Download stock data from Yahoo Finance
+    stock_data = yf.download(stocks, start=start_date, end=end_date)
 
-    # Calculate the MACD histogram
-    macd_histogram = macd_line - signal_line
+    # Reset the index and convert the 'Date' column to datetime
+    stock_data = stock_data.reset_index()
+    stock_data['Date'] = pd.to_datetime(stock_data['Date'])
 
-    # Project MACD and signal values one day into the future
-    projected_macd = np.roll(macd_line, -1)
-    projected_signal = np.roll(signal_line, -1)
+    # Check if the 'Adj Close' column exists and rename it if necessary
+    if 'Adj Close' in stock_data.columns:
+        stock_data.rename(columns={'Adj Close': 'Close'}, inplace=True)
 
-    # Filter stocks based on MACD conditions
-    filtered_stocks = data[(macd_histogram > 0) & (macd_line > projected_macd) & (signal_line > projected_signal)].set_index('Date')
+    # Display the DataFrame
+    print(stock_data)
 
-    return filtered_stocks
+    # Ensure that the 'Symbol' column is present in the DataFrame
+    stock_data['Symbol'] = stock_data['Ticker']
 
-# Step 1: Filter stocks based on volume criteria
-filtered_data = volume_filter(data, threshold=0.03)
+    # Calculate MACD and ADX for each stock
+    try:
+        macd_data = stock_data.groupby('Symbol').apply(calculate_macd, periods=[12, 26, 9]).reset_index(drop=True)
+        stock_data = pd.merge(stock_data, macd_data, on=['Symbol'])
+    except KeyError as e:
+        print(f"Failed to calculate MACD: {e}")
+        return
 
-# Step 2: Calculate ADX
-filtered_data = calculate_adx(filtered_data, threshold=25)
+    try:
+        stock_data = stock_data.groupby('Symbol').apply(calculate_adx, periods=14).reset_index(drop=True)
+    except KeyError as e:
+        print(f"Failed to calculate ADX: {e}")
+        return
 
-# Step 3: Calculate MACD
-macd_filtered_data = calculate_macd(filtered_data)
+    # Filter stocks based on ADX and MACD criteria
+    filtered_stocks = filter_stocks(stock_data)
+    print("Filtered stocks:", filtered_stocks)
 
-print(macd_filtered_data)
+    # Calculate MACD periods for each stock
+    macd_periods = calculate_macd_periods(stock_data)
+    print("MACD periods:", macd_periods)
+
+if __name__ == '__main__':
+    main()
